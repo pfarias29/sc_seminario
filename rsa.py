@@ -5,7 +5,7 @@ Implementação de gerador e verificador de assinaturas RSA
     + Geração de chaves (p e q primos com no mínimo 1024  bits)
     + Cifração/decifração assimétrica RSA usando OAEP
 -> Parte 2: assinatura 
-    + Cálculo de hasjes da mensagem (SHA-3)
+    + Cálculo de hashes da mensagem (SHA-3)
     + Assinatura da mensagem
     + Formatação do resultado (caracteres especiais e informações para verificação em BASE64)
 -> Parte 3: verificação 
@@ -13,76 +13,185 @@ Implementação de gerador e verificador de assinaturas RSA
     + Decifração da assinatura
     + Verificação da assinatura
 '''
-from random import randrange
-from sympy import isprime
-from math import gcd
+from sympy import randprime
+from random import randrange, getrandbits, randint
+from hashlib import sha3_256
+from base64 import b64encode, b64decode 
+
+NUM_BITS = 1024
+SEED_LENGTH = 256
+PADDING_LENGTH = 256
+
+def miller_rabin(n, d):
+    a = randint(2, n - 2)
+    x = pow(a, d, n)
+
+    if x == 1 or x == n - 1:
+        return True
+
+    while d != n - 1:
+        x = pow(x, 2, n)
+        d *= 2
+
+        if x == 1:
+            return False
+        if x == n - 1:
+            return True
+
+    return False
+
+def isprime(n, k=5):
+    
+    if n == 2:
+        return True
+
+    if n < 2 or n % 2 == 0:
+        return False
+
+    d = n - 1
+    while d % 2 == 0:
+        d //= 2
+
+    for _ in range(k):
+        if not miller_rabin(n, d):
+            return False
+        
+    return True
 
 
-def random_number_1024_bits():
-    # Gera um número aleatório de 1024 bits
-    return randrange((2**1023) + 1, (2**1024) - 1)
 
-def generate_p_q():
-    # Geração dos primos p e q e checagem de primalidade
-    p, q = 0, 0
 
-    while not isprime(p):
-        p = random_number_1024_bits()
-        if p % 2 == 0:
-            continue
-        if isprime(p):
-            break
-    while not isprime(q):
-        q = random_number_1024_bits()
-        if q % 2 == 0:
-            continue
-        if isprime(q):
-            break
+def gen_prime():
+    while True:
+        min_bits = 2 ** (NUM_BITS - 1)
+        max_bits = 2 ** NUM_BITS - 1
 
-    return p, q
+        prime_number = randprime(min_bits, max_bits)
 
-def algoritmo_euclidiano_estendido(a, b):
-    if b == 0:
-        return (a, 1, 0)
-    else:
-        gcd, x, y = algoritmo_euclidiano_estendido(b, a % b)
-        return (gcd, y, x - (a // b) * y)
+        if isprime(prime_number):
+            return prime_number
 
-def mod_inverse(e, phi):
-    # Cálculo do inverso multiplicativo de e mod phi
-    gcd, x, _ = algoritmo_euclidiano_estendido(e, phi)
-    if gcd != 1:
-        return None
-    return x % phi
+def gcd(a, b):
+    while b != 0:
+        a, b = b, a % b
+    return a
 
-def gernerate_keys(p, q):
-    #Cálculo de n e phi(n)
+
+def mod_inverse(a, m):
+    m0, y, x = m, 0, 1
+
+    if m == 1:
+        return 0
+
+    while a > 1:
+        q = a // m
+        m, a = a % m, m
+        y, x = x - q * y, y
+    
+    return x + m0 if x < 0 else x
+
+
+def generate_keys():
+    p = gen_prime()
+    q = gen_prime()
     n = p * q
-    phi_n = (p-1) * (q-1)
-
-    # Valor inicial comumente usado para e
+    phi = (p - 1) * (q - 1)
     e = 65537
-    while gcd(e, phi_n) != 1:
-        e += 2
 
-    # Cálculo de d
-    # d . e ≡ 1 (mod phi(n)); d = e^(-1) mod phi(n) 
-    d = mod_inverse(e, phi_n)
+    while gcd(e, phi) != 1:
+        e = randrange(2, phi)
 
-    if (d == None):
-        print ("Não foi possível calcular o valor da chave privada")
-        return None, None
+    d = mod_inverse(e, phi)
 
     return (e, n), (d, n)
 
-if __name__ == "__main__":
+def xor_bytes(a, b):
+    return bytes([i ^ j for i, j in zip(a, b)])
 
-    print("Gerando chaves...")
-    p, q = generate_p_q()
-    public_key, private_key = gernerate_keys(p, q)
-    if (public_key == None):
-        print("Erro na geração das chaves")
-        exit()
-    print("Chaves geradas com sucesso!")
-    print("Chave pública: ", public_key)
-    print("Chave privada: ", private_key)
+
+def mgf1(seed, mask_len):
+    hlen = sha3_256().digest_size
+
+    output = b""
+
+    for i in range(0, -(-mask_len // hlen)):
+        c = i.to_bytes(4, 'big')
+        output += sha3_256(seed + c).digest()
+
+    return output[:mask_len]
+
+def oaep_encode(message, n):
+    mlen = len(message)
+    pad = b'\x00' * (n - mlen - PADDING_LENGTH // 8 - 2)
+    db = pad + b'\x01' + message
+
+    seed = getrandbits(SEED_LENGTH).to_bytes(SEED_LENGTH // 8, 'big')
+    db_mask = mgf1(seed, len(db))
+    masked_db = xor_bytes(db, db_mask)
+
+    seed_mask = mgf1(masked_db, SEED_LENGTH // 8)
+    masked_seed = xor_bytes(seed, seed_mask)
+
+    return b'\x00' + masked_seed + masked_db
+
+
+def rsa_encrypt(plaintext, public_key):
+    e, n = public_key
+    k = (n.bit_length() + 7) // 8 
+    encoded_message = oaep_encode(plaintext, k)
+    plaintext_int = int.from_bytes(encoded_message, 'big')
+    ciphertext = pow(plaintext_int, e, n)
+
+    return ciphertext
+
+
+def oaep_decode(encoded_message, k):
+    encoded_message = encoded_message[1:]
+
+    masked_seed = encoded_message[:SEED_LENGTH // 8]
+    masked_db = encoded_message[SEED_LENGTH // 8:]
+
+    seed_mask = mgf1(masked_db, SEED_LENGTH // 8)
+    seed = xor_bytes(masked_seed, seed_mask)
+
+    db_mask = mgf1(seed, len(masked_db))
+    db = xor_bytes(masked_db, db_mask)
+
+    lhash_len = len(sha3_256().digest())
+    ps_end = db.index(b'\x01', lhash_len)
+    message = db[ps_end + 1:]
+
+    return message
+
+
+def rsa_decrypt(ciphertext, private_key):
+    d, n = private_key
+    k = (n.bit_length() + 7) // 8
+    plaintext_int = pow(ciphertext, d, n)
+    plaintext = plaintext_int.to_bytes(k, 'big')
+
+    return oaep_decode(plaintext, k)
+
+
+def calculate_hash(file_path):    
+    with open(file_path, 'rb') as f:
+        while chunk := f.read(4096):
+            sha3_256().update(chunk)
+
+    return sha3_256().digest()
+
+
+def sign_file(file_path, private_key):
+    hash = calculate_hash(file_path)
+    signature = rsa_encrypt(hash, private_key)
+    formatted_signature = b64encode(signature.to_bytes((signature.bit_length() + 7) // 8, 'big')).decode()
+
+    return formatted_signature
+
+
+def verify_file(file_path, base64_signature, public_key):
+    signature = int.from_bytes(b64decode(base64_signature), 'big')
+    decrypted_hash = rsa_decrypt(signature, public_key)
+    current_hash = calculate_hash(file_path)
+
+    return decrypted_hash == current_hash
