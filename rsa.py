@@ -199,7 +199,7 @@ def verify_file(file_path, base64_signature, public_key):
 
 def main():
     message_file = 'teste.txt'
-    pdf_file = 'CIC0201-2024-2-Seminario.pdf'
+    pdf_file = 'documentacao_seminario.pdf'
 
     message = 'Seminário de Segurança Computacional'
 
